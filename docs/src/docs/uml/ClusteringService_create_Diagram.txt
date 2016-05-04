@@ -1,0 +1,210 @@
+@startuml
+title Ehcache ClusteringService ""create()"" Processing
+
+participant DefaultClusteringService as ClusteringService << Service >>
+
+participant EhcacheClientEntityFactory
+participant CoordinationService
+participant TerracottaEntityRef as "EntityRef<EhcacheClientEntity>"
+participant EntityClientServiceFactory
+participant EhcacheClientEntityService as EntityClientService
+participant EhcacheClientEntity
+
+participant TerracottaInternalClientStaticFactory
+participant ClientEntityManager
+participant EntityClientEndpoint
+participant TerracottaConnection as Connection << Connection >>
+
+box "Server" #LightRed
+participant Voltron
+boundary EhcacheActiveEntity
+participant PageStore
+end box
+
+[-> ClusteringService : create()
+activate ClusteringService
+
+  group ""ClusteringService.create""
+    ClusteringService -> EhcacheClientEntityFactory : create(//url.path//, ServerSideConfiguration)
+    activate EhcacheClientEntityFactory
+
+      note right of ClusteringService
+      This creates an ""EhcacheClientEntity"" but ""ClusteringService"" does not
+      retain a reference to the object.  A reference is obtained by a later lookup.
+      end note
+
+      EhcacheClientEntityFactory -> EhcacheClientEntityFactory : asLeaderOf(//url.path//, //task//)
+      activate EhcacheClientEntityFactory #DarkSalmon
+        EhcacheClientEntityFactory -> CoordinationService : executeIfLeader(EhcacheClientEntity.class, //url.path//, //task//)
+        activate CoordinationService
+
+          critical as elected LEADER
+            note left of CoordinationService #LightYellow : Ignoring election mechanics ...
+
+            CoordinationService -> EhcacheClientEntityFactory : //task//.call(//clean//)
+            activate EhcacheClientEntityFactory #LightBlue
+
+              group //task//
+                EhcacheClientEntityFactory -> EhcacheClientEntityFactory : getEntityRef(//url.path//)
+                activate EhcacheClientEntityFactory #LightSalmon
+
+                  EhcacheClientEntityFactory -> Connection : getEntityRef(EhcacheClientEntity.class, //url.path//)
+                  activate Connection
+
+                    Connection -> Connection : getEntityService(EhcacheClientEntity.class)
+                    activate Connection
+
+                      Connection -> EntityClientServiceFactory : //creationServiceForType(EhcacheClientEntity)//
+                      activate EntityClientServiceFactory
+                        note left of EntityClientServiceFactory : Locates ""EntityClientService"" implementation for ""EhcacheClientEntity""
+                        create EntityClientService
+                        EntityClientServiceFactory -> EntityClientService : new
+                        EntityClientServiceFactory <-- EntityClientService : <<EhcacheClientEntityService>>
+                      Connection <-- EntityClientServiceFactory : <<EhcacheClientEntityService>>
+                      deactivate EntityClientServiceFactory
+
+                    Connection <-- Connection : <<EhcacheClientEntityService>>
+                    deactivate Connection
+
+                    create TerracottaEntityRef
+                    Connection -> TerracottaEntityRef : new(ClientEntityManager, ..., <<EhcacheClientEntityService>>)
+                    activate TerracottaEntityRef
+
+                    Connection <-- TerracottaEntityRef
+                    deactivate TerracottaEntityRef
+
+                  ' Return from Connection.getEntityRef
+                  EhcacheClientEntityFactory <-- Connection : EntityRef<EhcacheClientEntity>
+                  deactivate Connection
+
+                  note right of EhcacheClientEntityFactory
+                    An ""EntityID"" is encoded in the ""EntityRef"" that includes the entity
+                    type -- ""EhcacheClientEntity"".  This is paired with ""EhcacheActiveEntity""
+                    on the server via ""EhcacheServerEntityService"".
+                  end note
+
+                  EhcacheClientEntityFactory -> TerracottaEntityRef : create()
+                  activate TerracottaEntityRef #DarkSalmon
+
+                    TerracottaEntityRef -> ClientEntityManager : createEntity
+                    activate ClientEntityManager
+                      ClientEntityManager -> Voltron : VoltronEntityMessage.CREATE_ENTITY
+
+                        note left of Voltron
+                          Many details are omitted but the ""CREATE_ENTITY"" message makes its way
+                          through the following:
+                            ""ProcessTransactionHandler.addMessage""
+                            ""EntityExistenceHelpers.createEntityReturnWasCached""
+                            ""EntityManagerImpl.createEntity""
+                          forming a new ""ManagedEntityImpl"" instance.  The ""ManagedEntityImpl""
+                          is given a reference to an ""EhcacheServerEntityService"" instance.
+
+                          ""ProcessTransactionHander.addMessage"" ultimately invokes
+                          ""ManagedEntityImpl.createEntity"" which, using the ""EhcacheServerEntityServer"",
+                           creates a new ""EhcacheActiveEntity"".
+                        end note
+
+                        create EhcacheActiveEntity
+                        Voltron -> EhcacheActiveEntity : new
+
+                      ClientEntityManager <-- Voltron
+                    TerracottaEntityRef <-- ClientEntityManager
+                    deactivate ClientEntityManager
+
+                  ' Return from TerracottaEntityRef.create()
+                  EhcacheClientEntityFactory <-- TerracottaEntityRef
+                  deactivate TerracottaEntityRef
+
+                  EhcacheClientEntityFactory -> TerracottaEntityRef : fetchEntity()
+                  activate TerracottaEntityRef
+
+                    TerracottaEntityRef -> ClientEntityManager : fetchEntity()
+                    activate ClientEntityManager
+
+                      ClientEntityManager -> ClientEntityManager : internalLookup
+                      activate ClientEntityManager
+
+                      ' *** BEGIN WORK HERE ***
+
+                      ClientEntityManager <-- ClientEntityManager : <<EntityClientEndPoint>>
+                      deactivate ClientEntityManager
+
+                      create EntityClientEndpoint
+                      ClientEntityManager -> EntityClientEndpoint : new
+                      activate EntityClientEndpoint
+
+                      ClientEntityManager <-- EntityClientEndpoint : <<EntityClientEndpoint>>
+                      deactivate EntityClientEndpoint
+
+                    ' Return from ClientEntityManager.fetchEntity()
+                    TerracottaEntityRef <-- ClientEntityManager : <<EntityClientEndpoint>>
+                    deactivate ClientEntityManager
+
+                    ' *** EntityClientService ::= EhcacheClientEntityService
+                    TerracottaEntityRef -> EntityClientService : create(<<EntityClientEndpoint>>)
+                    activate EntityClientService
+
+                      create EhcacheClientEntity
+                      EntityClientService -> EhcacheClientEntity : new(<<EntityClientEndpoint>>)
+
+                      EntityClientService <-- EhcacheClientEntity
+
+                    TerracottaEntityRef <-- EntityClientService : <<EhcacheClientEntity>>
+                    deactivate EntityClientService
+
+                  ' Return from TerracottaEntityRef.fetchEntity()
+                  EhcacheClientEntityFactory <-- TerracottaEntityRef : <<EhcacheClientEntity>>
+                  deactivate TerracottaEntityRef
+
+                  EhcacheClientEntityFactory -> EhcacheClientEntityFactory : configure(ServerSideConfiguration)
+                  activate EhcacheClientEntityFactory
+
+                    ' *** Aims to configure the EhcacheActiveEntity on the server
+                    EhcacheClientEntityFactory -> EhcacheClientEntity : configure(ServerSideConfiguration)
+                    activate EhcacheClientEntity
+
+                      EhcacheClientEntity -> EhcacheClientEntity : invoke(EhcacheEntityMessage.//configure//)
+                      activate EhcacheClientEntity
+
+                        EhcacheClientEntity -> EntityClientEndpoint : beginInvoke().message().invoke()
+                        activate EntityClientEndpoint
+                          note left #LightRed : Simplified
+                        EhcacheClientEntity -> EntityClientEndpoint : <<EhcacheEntityResponse>>
+                        deactivate EntityClientEndpoint
+
+                      EhcacheClientEntity <-- EhcacheClientEntity
+                      deactivate EhcacheClientEntity
+
+                    EhcacheClientEntityFactory <-- EhcacheClientEntity : <<EhcacheClientEntity>>
+                    deactivate EhcacheClientEntity
+
+                  ' Return from EhcacheClientEntityFactory.configure()
+                  EhcacheClientEntityFactory <-- EhcacheClientEntityFactory
+                  deactivate EhcacheClientEntityFactory
+
+                ' Return from EhcacheClientEntityFactory.getEntityRef()
+                EhcacheClientEntityFactory <-- EhcacheClientEntityFactory
+                deactivate EhcacheClientEntityFactory
+              end group
+
+            ' Return from EhcacheClientEntityFactory //task//.call()
+            CoordinationService <-- EhcacheClientEntityFactory : <<EhcacheClientEntity>>
+            deactivate EhcacheClientEntityFactory
+          end critical
+
+        ' Return from CoordinationService.executeIfLeader
+        EhcacheClientEntityFactory <-- CoordinationService : <<EhcacheClientEntity>>
+        deactivate CoordinationService
+
+      ' Return from asLeaderOf
+      EhcacheClientEntityFactory <-- EhcacheClientEntityFactory : <<EhcacheClientEntity>>
+      deactivate EhcacheClientEntityFactory
+
+    ClusteringService <-- EhcacheClientEntityFactory
+    deactivate EhcacheClientEntityFactory
+  end group
+
+[<- ClusteringService :
+deactivate ClusteringService
+
+@enduml

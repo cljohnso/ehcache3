@@ -1,0 +1,382 @@
+@startuml
+
+title Ehcache Clustered Client Initialization
+
+participant EhcacheManager
+participant ServiceLocator
+participant ServiceFactory
+participant StoreSupport
+participant "<<Service>>" as Service
+participant DefaultClusteringService as ClusteringService << Service >>
+participant ClusteredStore.Provider as ClusteredStore.Provider << Service >>
+participant ClusteredStore as Store << Store >>
+participant Ehcache
+
+participant EhcacheClientEntityFactory
+participant CoordinationService
+participant TerracottaEntityRef as "EntityRef<EhcacheClientEntity>"
+participant EhcacheClientEntity
+
+participant ConnectionFactory
+participant ConnectionService
+participant TerracottaInternalClientStaticFactory
+participant ClientEntityManager
+participant EntityClientEndpoint
+participant TerracottaConnection as Connection << Connection >>
+
+participant Voltron
+
+box "Server" #LightRed
+boundary EhcacheActiveEntity
+participant ServerStore
+participant PageStore
+end box
+
+[-> EhcacheManager : new
+activate EhcacheManager
+EhcacheManager -> ServiceLocator : new
+activate ServiceLocator
+
+  EhcacheManager -> EhcacheManager : resolveServices()
+  activate EhcacheManager #LightSalmon
+  note right
+    ""resolveServices()" attempts to ensure the <<Service>> implementations supporting each
+    service configuration in the ""CacheManager"" configuration is available.
+  end note
+  loop configuration.getServiceCreationConfigurations()
+    EhcacheManager -> ServiceLocator : getOrCreateServiceFor(config)
+    activate ServiceLocator #LightSalmon
+    note right : //Configured// services are **not** annotated with @PluralService; their dependent services may be
+      ServiceLocator -> ServiceLocator : getServiceInternal(config.getServiceType())
+      activate ServiceLocator #LightBlue
+        ServiceLocator -> ServiceLocator : findServices(serviceType)
+        activate ServiceLocator #DarkSalmon
+          ServiceLocator -> ServiceLocator : discoverServices(serviceType)
+          activate ServiceLocator
+
+            ServiceLocator -> ServiceLocator : getServiceFactories()
+            activate ServiceLocator #LightBlue
+            note right #LightBLue : Uses ""java.util.ServiceLoader"" framework to locate <<ServiceFactory>> instances
+            ServiceLocator <-- ServiceLocator : List<ServiceFactory>
+            deactivate ServiceLocator
+            loop List<ServiceFactory>
+              opt serviceType.isAssignableFrom(<<ServiceFactory>>.getServiceType())
+
+                ServiceLocator -> ServiceFactory : create()
+                activate ServiceFactory
+                note over ClusteringService : The ClusteringService is one example\nof a configured <<Service>>.
+                create ClusteringService
+                ServiceFactory -> ClusteringService : new
+                activate ClusteringService
+                ClusteringService -> ClusteringService : ctor()
+                activate ClusteringService #LightSalmon
+                ServiceFactory <-- ClusteringService
+                deactivate ClusteringService
+
+                ServiceLocator <-- ServiceFactory : <<Service>>
+                deactivate ServiceFactory
+
+                ServiceLocator -> ServiceLocator : addService(<<Service>>)
+                activate ServiceLocator #LightBlue
+                  group ""ServiceLocator.addService""
+                    ServiceLocator -> ServiceLocator :
+                    note right #LightBlue
+                      (1) register <<Service>> under its own class type
+                      (2) for each implemented <<Service>> type, register <<Service>>; permit
+                          multiple registration //iff// the interface is marked as ""@PluralService""
+                    end note
+                    opt //running//
+                      ServiceLocator -> ServiceLocator : loadDependenciesOf()
+                      activate ServiceLocator #DarkSalmon
+                      ref over ServiceLocator : ""ServiceLocator.loadDependenciesOf""
+                      ServiceLocator <-- ServiceLocator
+                      deactivate ServiceLocator
+                      ServiceLocator -> Service : start()
+                      activate Service #DarkSalmon
+                      note left of Service
+                        Note that this call is **not** used to start the ClusteringService or
+                        the ClusteredStore.Provider.
+                      end note
+                      ServiceLocator <-- Service
+                      deactivate Service
+                    end opt
+                  end group
+                ServiceLocator <-- ServiceLocator
+                deactivate ServiceLocator
+              end
+            end loop
+
+          ' Return from discoverServices()
+          ServiceLocator <-- ServiceLocator : List< <<Service>> >
+          deactivate ServiceLocator
+
+        ' Return from findServices()
+        ServiceLocator <-- ServiceLocator : <<Service>>
+        deactivate ServiceLocator
+
+      ' Return from getServiceInternal()
+      ServiceLocator <-- ServiceLocator : <<Service>>
+      deactivate ServiceLocator
+
+    ' Return from getOrCreateServiceFor()
+    EhcacheManager <-- ServiceLocator : <<Service>>
+    deactivate ServiceLocator
+  end loop
+
+  EhcacheManager -> ServiceLocator : loadDependenciesOf(ServiceDeps.class)
+  activate ServiceLocator #LightSalmon
+  note right
+    The ""@ServiceDependencies"" annotation supporting EhcacheManager includes ""Service.Provider"".  This causes **all** ""Service.Provider""
+    implementations in the class path, including ""ClusteredStore.Provider"" to be loaded.  At least some of these dependencies, including the
+    ""Service.Provider"" classes, are annotated with ""@PluralService"".
+  end note
+
+    group ""ServiceLocator.loadDependenciesOf""
+      ServiceLocator -> ServiceLocator : identifyTransitiveDependenciesOf(clazz)
+      activate ServiceLocator #LightBlue
+
+        ServiceLocator -> ServiceLocator : findServices(serviceType)
+        activate ServiceLocator #DarkSalmon
+
+          ServiceLocator -> ServiceLocator : discoverServices(serviceType)
+          activate ServiceLocator
+            ServiceLocator -> ServiceLocator : getServiceFactories()
+            activate ServiceLocator #LightBlue
+            ServiceLocator <-- ServiceLocator : List<ServiceFactory>
+            deactivate ServiceLocator
+            loop List<ServiceFactory>
+              opt serviceType.isAssignableFrom(<<ServiceFactory>>.getServiceType())
+
+                ServiceLocator -> ServiceFactory : create()
+                activate ServiceFactory
+
+                  note over ClusteredStore.Provider : The ClusteredStore.Provider is one example\nof a //configuration-less// <<Service>>.
+                  create ClusteredStore.Provider
+                  ServiceFactory -> ClusteredStore.Provider : new
+                  activate ClusteredStore.Provider
+                  ClusteredStore.Provider -> ClusteredStore.Provider : ctor()
+                  activate ClusteredStore.Provider #LightSalmon
+                  ServiceFactory <-- ClusteredStore.Provider
+                  deactivate ClusteredStore.Provider
+
+                ' Return from create()
+                ServiceLocator <-- ServiceFactory : <<Service>>
+                deactivate ServiceFactory
+
+                ServiceLocator -> ServiceLocator : addService(<<Service>>)
+                activate ServiceLocator #LightBlue
+                  ref over ServiceLocator : ""ServiceLocator.addService""
+                ' Return from addService
+                ServiceLocator <-- ServiceLocator
+                deactivate ServiceLocator
+              end
+            end loop
+          ' Return from discoverServices()
+          ServiceLocator <-- ServiceLocator : List< <<Service>> >
+          deactivate ServiceLocator
+
+        ' Return from findServices()
+        ServiceLocator <-- ServiceLocator : <<Service>>
+        deactivate ServiceLocator
+
+      ServiceLocator <-- ServiceLocator
+      deactivate ServiceLocator
+    end group
+
+  ServiceLocator --> EhcacheManager
+  deactivate ServiceLocator
+
+  ' Return from resolveServices()
+  EhcacheManager --> EhcacheManager
+  deactivate EhcacheManager
+
+[<-- EhcacheManager
+
+newpage Ehcache Clustered Client Initialization\nPost-Constructor Initialization
+
+[-> EhcacheManager : init()
+activate EhcacheManager #DarkSalmon
+
+  EhcacheManager -> ServiceLocator : startAllServices()
+  activate ServiceLocator #LightSalmon
+
+    ServiceLocator -> ServiceLocator : resolveMissingDependencies()
+    activate ServiceLocator #LightBlue
+
+      loop registered services
+        ServiceLocator -> ServiceLocator : loadDependenciesOf(registeredService)
+        activate ServiceLocator #DarkSalmon
+          ref over ServiceLocator : ""ServiceLocator.loadDependenciesOf""
+        ServiceLocator <-- ServiceLocator
+        deactivate ServiceLocator
+      end loop
+
+      hnote over ServiceLocator : Set //running//
+
+    ' Return from resolveMissingDependencies
+    ServiceLocator <-- ServiceLocator
+    deactivate ServiceLocator
+
+    note over ServiceLocator, Service #Pink
+      The processing order for starting <<Service>> instances is **not** defined.
+    end note
+
+    ServiceLocator -> Service : start()
+    activate Service #LightSalmon
+    ServiceLocator <-- Service
+    deactivate Service
+
+    ServiceLocator -> ClusteringService : start()
+    activate ClusteringService #LightSalmon
+
+      ClusteringService -> ConnectionFactory : connect()
+      activate ConnectionFactory
+        ConnectionFactory -> ConnectionService : connect(//url//)
+        activate ConnectionService
+
+          ConnectionService -> TerracottaInternalClientStaticFactory : //getOrCreateTerracottaInternalClient()//
+          activate TerracottaInternalClientStaticFactory
+
+            note left of TerracottaInternalClientStaticFactory : Details omitted/obscured ...
+            create ClientEntityManager
+            TerracottaInternalClientStaticFactory o-> ClientEntityManager : new
+              note right : Not really created here ...
+            TerracottaInternalClientStaticFactory <-- ClientEntityManager : <<ClientEntityManager>>
+
+          ConnectionService <-- TerracottaInternalClientStaticFactory : <<TerracottaInternalClient>>
+          deactivate TerracottaInternalClientStaticFactory
+
+          create Connection
+          ConnectionService -> Connection : new(<<TerracottaInternalClient>>.getClientEntityManager())
+            note over Connection #LightYellow : //Many// details omitted
+
+            note left of Connection
+              At this point, a TCP connection is established with the server
+              and the communications infrastructure elements are created.
+            end note
+          ConnectionService <-- Connection : <<Connection>>
+
+        ConnectionFactory <-- ConnectionService : <<Connection>>
+        deactivate ConnectionService
+
+      ClusteringService <-- ConnectionFactory : <<Connection>>
+      deactivate ConnectionFactory
+
+      create EhcacheClientEntityFactory
+      ClusteringService -> EhcacheClientEntityFactory : new(<<Connection>>)
+      activate  EhcacheClientEntityFactory
+        EhcacheClientEntityFactory -> EhcacheClientEntityFactory : ctor()
+        activate EhcacheClientEntityFactory #DarkSalmon
+          create CoordinationService
+          EhcacheClientEntityFactory -> CoordinationService : new(<<Connection>>)
+          activate CoordinationService
+
+          EhcacheClientEntityFactory <-- CoordinationService : <<CoordinationService>>
+          deactivate CoordinationService
+        EhcacheClientEntityFactory <-- EhcacheClientEntityFactory
+        deactivate EhcacheClientEntityFactory
+      ClusteringService <-- EhcacheClientEntityFactory
+      deactivate EhcacheClientEntityFactory
+
+      opt //autoCreate//
+        ClusteringService -> ClusteringService : create()
+        activate ClusteringService #LightBlue
+
+        ref over ClusteringService : ClusteringService.create
+
+          ' The ClusteringService.create method results in the direct or indirect creation of several components:
+          create EntityClientEndpoint
+          ClusteringService -> EntityClientEndpoint : new
+          create EhcacheClientEntity
+          ClusteringService -> EhcacheClientEntity : new
+          create TerracottaEntityRef
+          ClusteringService -> TerracottaEntityRef : new
+
+        ' Return from create()
+        ClusteringService <-- ClusteringService
+        deactivate ClusteringService
+      end opt
+
+      ClusteringService -> ClusteringService : connect()
+      activate ClusteringService
+
+      ClusteringService <-- ClusteringService
+      deactivate ClusteringService
+
+      ... more detail here ...
+
+    ServiceLocator <-- ClusteringService :
+    deactivate ClusteringService
+
+    ServiceLocator -> ClusteredStore.Provider : start()
+    activate ClusteredStore.Provider #DarkSalmon
+    ... more detail here ...
+    ServiceLocator <-- ClusteredStore.Provider
+    deactivate ClusteredStore.Provider
+
+    note over ServiceLocator, ClusteredStore.Provider
+      All other configured, depdendent, and discovered services are started ...
+    end note
+
+  ' Return from ServiceLocator.startAllServices
+  EhcacheManager <-- ServiceLocator
+  deactivate ServiceLocator
+
+newpage Ehcache Clustered Client Initialization\nConfigured Cache Creation
+
+  note over EhcacheManager, EhcacheClientEntity #LightGreen
+  At this point, all configured services and service dependencies are registered, instantiated, and started.
+  Initialization of defined caches begins ...
+  end note
+
+  EhcacheManager -> EhcacheManager : createCache()
+  activate EhcacheManager #LightSalmon
+
+    EhcacheManager -> EhcacheManager : createNewEhcache()
+    activate EhcacheManager #LightBlue
+
+      EhcacheManager -> EhcacheManager : getStore()
+      activate EhcacheManager
+
+        EhcacheManager -> StoreSupport : selectStoreProvider()
+        activate StoreSupport #DarkSalmon
+          note left of StoreSupport : Selects ""Store.Provider"" implementation based in internal ranking
+        StoreSupport --> EhcacheManager : << ClusteredStore.Provider >>
+        deactivate StoreSupport
+
+        EhcacheManager -> ClusteredStore.Provider : createStore()
+        activate ClusteredStore.Provider #DarkSalmon
+          create Store
+          ClusteredStore.Provider -> Store : new
+
+          == ==
+          ... More detail about ClusteredStore initialization ...
+          == ==
+
+        ClusteredStore.Provider --> EhcacheManager : << Store >>
+        deactivate ClusteredStore.Provider
+
+      ' Return from EhcacheManager.getStore
+      EhcacheManager <-- EhcacheManager : << Store >>
+      deactivate EhcacheManager
+
+    create Ehcache
+    EhcacheManager -> Ehcache : new
+    activate Ehcache
+
+    EhcacheManager -> Ehcache : init()
+    activate Ehcache #DarkSalmon
+    Ehcache --> EhcacheManager
+    deactivate Ehcache
+
+    ' Return from EhcacheManager.createNewEhcache
+    EhcacheManager <-- EhcacheManager
+    deactivate EhcacheManager
+
+  ' Return from EhcacheManager.createCache
+  EhcacheManager <-- EhcacheManager
+  deactivate EhcacheManager
+
+[<- EhcacheManager
+deactivate EhcacheManager
+@enduml
