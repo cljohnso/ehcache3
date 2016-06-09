@@ -89,6 +89,7 @@ public class ClusteringServiceConfigurationParser implements CacheManagerService
    *
    * @return a {@link org.ehcache.clustered.client.config.ClusteringServiceConfiguration ClusteringServiceConfiguration}
    */
+  // TODO: Support setting getOperationTimeout via XML
   @Override
   public ServiceCreationConfiguration<ClusteringService> parseServiceCreationConfiguration(final Element fragment) {
     /*

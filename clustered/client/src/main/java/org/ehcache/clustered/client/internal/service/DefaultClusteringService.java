@@ -23,11 +23,13 @@ import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeoutException;
 
 import org.ehcache.clustered.client.config.ClusteredResourcePool;
 import org.ehcache.clustered.client.internal.EhcacheEntityBusyException;
 import org.ehcache.clustered.client.internal.EhcacheEntityCreationException;
 import org.ehcache.clustered.client.internal.EhcacheEntityNotFoundException;
+import org.ehcache.clustered.client.internal.config.ExperimentalClusteringServiceConfiguration;
 import org.ehcache.clustered.client.internal.store.ClusteredStore;
 import org.ehcache.clustered.client.internal.store.EventualServerStoreProxy;
 import org.ehcache.clustered.client.internal.store.ServerStoreProxy;
@@ -81,6 +83,7 @@ class DefaultClusteringService implements ClusteringService {
   private final String entityIdentifier;
   private final ConcurrentMap<String, Tuple<DefaultClusterCacheIdentifier, ClusteredMapRepository>> knownPersistenceSpaces =
       new ConcurrentHashMap<String, Tuple<DefaultClusterCacheIdentifier, ClusteredMapRepository>>();
+  private final EhcacheClientEntity.Timeouts operationTimeouts;
 
   private Connection clusterConnection;
   private EhcacheClientEntityFactory entityFactory;
@@ -93,6 +96,21 @@ class DefaultClusteringService implements ClusteringService {
     URI ehcacheUri = configuration.getClusterUri();
     this.clusterUri = extractClusterUri(ehcacheUri);
     this.entityIdentifier = clusterUri.relativize(ehcacheUri).getPath();
+
+    EhcacheClientEntity.Timeouts.Builder timeoutsBuilder = EhcacheClientEntity.Timeouts.builder();
+    if (configuration.getGetOperationTimeout() != null) {
+      timeoutsBuilder.setGetOperationalTimeout(configuration.getGetOperationTimeout());
+    }
+    if (configuration instanceof ExperimentalClusteringServiceConfiguration) {
+      ExperimentalClusteringServiceConfiguration experimentalConfiguration = (ExperimentalClusteringServiceConfiguration)configuration;
+      if (experimentalConfiguration.getMutativeOperationTimeout() != null) {
+        timeoutsBuilder.setMutativeOperationTimeout(experimentalConfiguration.getMutativeOperationTimeout());
+      }
+      if (experimentalConfiguration.getLifecycleOperationTimeout() != null) {
+        timeoutsBuilder.setLifecycleOperationTimeout(experimentalConfiguration.getLifecycleOperationTimeout());
+      }
+    }
+    this.operationTimeouts = timeoutsBuilder.build();
   }
 
   private static URI extractClusterUri(URI uri) {
@@ -113,11 +131,13 @@ class DefaultClusteringService implements ClusteringService {
     try {
       Properties properties = new Properties();
       properties.put(ConnectionPropertyNames.CONNECTION_NAME, CONNECTION_PREFIX + this.entityIdentifier);
+      properties.put(ConnectionPropertyNames.CONNECTION_TIMEOUT,
+          Long.toString(operationTimeouts.getLifecycleOperationTimeout().toMillis()));
       clusterConnection = ConnectionFactory.connect(clusterUri, properties);
     } catch (ConnectionException ex) {
       throw new RuntimeException(ex);
     }
-    entityFactory = new EhcacheClientEntityFactory(clusterConnection);
+    entityFactory = new EhcacheClientEntityFactory(clusterConnection, operationTimeouts);
     try {
       EhcacheEntityCreationException failure = null;
       if (configuration.isAutoCreate()) {
@@ -127,6 +147,9 @@ class DefaultClusteringService implements ClusteringService {
           failure = e;
         } catch (EntityAlreadyExistsException e) {
           //ignore - entity already exists
+        } catch (TimeoutException e) {
+          throw new RuntimeException("Unable to create server-side manager; create operation for "
+              + this.entityIdentifier + " timed out", e);
         }
       }
       try {
@@ -138,6 +161,9 @@ class DefaultClusteringService implements ClusteringService {
         throw new IllegalStateException(failure == null ? e : failure);
       } catch (EhcacheEntityBusyException e) {
         throw new IllegalStateException(failure == null ? e : failure);
+      } catch (TimeoutException e) {
+        throw new RuntimeException("Unable to connect to server-side manager; retrieve operation for "
+            + this.entityIdentifier + " timed out", e);
       }
     } catch (RuntimeException e) {
       entityFactory = null;
@@ -158,7 +184,7 @@ class DefaultClusteringService implements ClusteringService {
     } catch (ConnectionException ex) {
       throw new RuntimeException(ex);
     }
-    entityFactory = new EhcacheClientEntityFactory(clusterConnection);
+    entityFactory = new EhcacheClientEntityFactory(clusterConnection, operationTimeouts);
     if (!entityFactory.acquireLeadership(entityIdentifier)) {
       entityFactory = null;
       try {
@@ -255,7 +281,11 @@ class DefaultClusteringService implements ClusteringService {
 
   @Override
   public void destroy(String name) throws CachePersistenceException {
-    entity.destroyCache(name);
+    try {
+      entity.destroyCache(name);
+    } catch (TimeoutException e) {
+      throw new CachePersistenceException("Timed out trying to destroy server-side cache for " + name, e);
+    }
   }
 
   @Override
@@ -303,9 +333,13 @@ class DefaultClusteringService implements ClusteringService {
     if (configuration.isAutoCreate()) {
       try {
         this.entity.validateCache(cacheId, clientStoreConfiguration);
+      } catch (TimeoutException e) {
+        throw new ClusteredStoreValidationException("Timed out trying to validate server-side cache for " + cacheId, e);
       } catch (IllegalStateException e) {
         try {
           this.entity.createCache(cacheId, clientStoreConfiguration);
+        } catch (TimeoutException e1) {
+          throw new ClusteredStoreCreationException("Timed out trying to create server-side cache for " + cacheId, e);
         } catch (CachePersistenceException ex) {
           throw new ClusteredStoreCreationException("Error creating server-side cache for " + cacheId, ex);
         }
@@ -313,6 +347,8 @@ class DefaultClusteringService implements ClusteringService {
     } else {
       try {
         this.entity.validateCache(cacheId, clientStoreConfiguration);
+      } catch (TimeoutException e) {
+        throw new ClusteredStoreValidationException("Timed out trying to validate server-side cache for " + cacheId, e);
       } catch (IllegalStateException e) {
         throw new ClusteredStoreValidationException("Error validating server-side cache for " + cacheId, e);
       }
@@ -338,6 +374,13 @@ class DefaultClusteringService implements ClusteringService {
       this.entity.releaseCache(cacheId);
     } catch (CachePersistenceException e) {
       throw new IllegalStateException(e);
+    } catch (TimeoutException e) {
+      /*
+       * A delayed ServerStore release is simply logged. If due to a disconnection, the server-side
+       * release will take place when the server recognizes the client is disconnected.  If the
+       * communication is only delayed, the message will eventually be presented and acted upon.
+       */
+      LOGGER.warn("Timed out trying to release server-side cache for {}", cacheId, e);
     }
   }
 

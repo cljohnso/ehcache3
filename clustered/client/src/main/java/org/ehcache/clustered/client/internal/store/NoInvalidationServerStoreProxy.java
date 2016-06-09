@@ -22,6 +22,7 @@ import org.ehcache.clustered.common.messages.ServerStoreMessageFactory;
 import org.ehcache.clustered.common.store.Chain;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Provides client-side access to the services of a {@code ServerStore}.
@@ -52,10 +53,12 @@ class NoInvalidationServerStoreProxy implements ServerStoreProxy {
   }
 
   @Override
-  public Chain get(long key) {
+  public Chain get(long key) throws TimeoutException {
     EhcacheEntityResponse response;
     try {
       response = entity.invoke(messageFactory.getOperation(key), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw new ServerStoreProxyException(e);
     }
@@ -68,19 +71,23 @@ class NoInvalidationServerStoreProxy implements ServerStoreProxy {
   }
 
   @Override
-  public void append(long key, ByteBuffer payLoad) {
+  public void append(long key, ByteBuffer payLoad) throws TimeoutException {
     try {
       entity.invoke(messageFactory.appendOperation(key, payLoad), true);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw new ServerStoreProxyException(e);
     }
   }
 
   @Override
-  public Chain getAndAppend(long key, ByteBuffer payLoad) {
+  public Chain getAndAppend(long key, ByteBuffer payLoad) throws TimeoutException {
     EhcacheEntityResponse response;
     try {
       response = entity.invoke(messageFactory.getAndAppendOperation(key, payLoad), true);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw new ServerStoreProxyException(e);
     }
@@ -93,19 +100,23 @@ class NoInvalidationServerStoreProxy implements ServerStoreProxy {
   }
 
   @Override
-  public void replaceAtHead(long key, Chain expect, Chain update) {
+  public void replaceAtHead(long key, Chain expect, Chain update) throws TimeoutException {
     // TODO: Optimize this method to just send sequences for expect Chain
     try {
       entity.invoke(messageFactory.replaceAtHeadOperation(key, expect, update), true);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw new ServerStoreProxyException(e);
     }
   }
 
   @Override
-  public void clear() {
+  public void clear() throws TimeoutException {
     try {
       entity.invoke(messageFactory.clearOperation(), true);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw new ServerStoreProxyException(e);
     }

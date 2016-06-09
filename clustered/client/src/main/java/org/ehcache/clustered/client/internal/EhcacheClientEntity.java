@@ -17,6 +17,7 @@
 package org.ehcache.clustered.client.internal;
 
 import org.ehcache.CachePersistenceException;
+import org.ehcache.clustered.client.config.TimeoutDuration;
 import org.ehcache.clustered.common.ClusteredEhcacheIdentity;
 import org.ehcache.clustered.common.ClusteredStoreValidationException;
 import org.ehcache.clustered.common.ServerSideConfiguration;
@@ -26,6 +27,8 @@ import org.ehcache.clustered.common.messages.LifeCycleMessageFactory;
 import org.ehcache.clustered.common.messages.EhcacheEntityResponse;
 import org.ehcache.clustered.common.messages.EhcacheEntityResponse.Failure;
 import org.ehcache.clustered.common.messages.EhcacheEntityResponse.Type;
+import org.ehcache.clustered.common.messages.LifecycleMessage;
+import org.ehcache.clustered.common.messages.ServerStoreOpMessage.ServerStoreOp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.terracotta.connection.entity.Entity;
@@ -36,15 +39,23 @@ import org.terracotta.entity.InvokeFuture;
 import org.terracotta.entity.MessageCodecException;
 import org.terracotta.exception.EntityException;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import static org.ehcache.clustered.common.messages.ServerStoreOpMessage.ServerStoreOp.GET;
+import static org.ehcache.clustered.common.messages.ServerStoreOpMessage.ServerStoreOp.getServerStoreOp;
 
 /**
- *
- * @author cdennis
+ * The client-side {@link Entity} through which clustered cache operations are performed.
+ * An instance of this class is created by the {@link EhcacheClientEntityService}.
+ * The server-side partner is the {@code EhcacheActiveEntity}.
  */
 public class EhcacheClientEntity implements Entity {
 
@@ -63,6 +74,8 @@ public class EhcacheClientEntity implements Entity {
   private final Map<Class<? extends EhcacheEntityResponse>, List<ResponseListener<? extends EhcacheEntityResponse>>> responseListeners = new ConcurrentHashMap<Class<? extends EhcacheEntityResponse>, List<ResponseListener<? extends EhcacheEntityResponse>>>();
   private final List<DisconnectionListener> disconnectionListeners = new CopyOnWriteArrayList<DisconnectionListener>();
   private volatile boolean connected = true;
+
+  private Timeouts timeouts = Timeouts.builder().build();
 
   public EhcacheClientEntity(EntityClientEndpoint<EhcacheEntityMessage, EhcacheEntityResponse> endpoint) {
     this.endpoint = endpoint;
@@ -96,6 +109,14 @@ public class EhcacheClientEntity implements Entity {
 
   void setConnected(boolean connected) {
     this.connected = connected;
+  }
+
+  Timeouts getTimeouts() {
+    return timeouts;
+  }
+
+  void setTimeouts(Timeouts timeouts) {
+    this.timeouts = timeouts;
   }
 
   private void fireResponseEvent(EhcacheEntityResponse response) {
@@ -135,49 +156,63 @@ public class EhcacheClientEntity implements Entity {
     endpoint.close();
   }
 
-  public void validate(ServerSideConfiguration config) throws IllegalArgumentException {
+  public void validate(ServerSideConfiguration config) throws IllegalArgumentException, TimeoutException {
     try {
-      invokeInternal(messageFactory.validateStoreManager(config), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.validateStoreManager(config), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, IllegalArgumentException.class, ILLEGAL_ARGUMENT_EXCEPTION_CTOR);
     }
   }
 
-  public void configure(ServerSideConfiguration config) throws IllegalStateException {
+  public void configure(ServerSideConfiguration config) throws IllegalStateException, TimeoutException {
     try {
-      invokeInternal(messageFactory.configureStoreManager(config), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.configureStoreManager(config), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, IllegalStateException.class, ILLEGAL_STATE_EXCEPTION_CTOR);
     }
   }
 
-  public void createCache(String name, ServerStoreConfiguration serverStoreConfiguration) throws CachePersistenceException {
+  public void createCache(String name, ServerStoreConfiguration serverStoreConfiguration)
+      throws CachePersistenceException, TimeoutException {
     try {
-      invokeInternal(messageFactory.createServerStore(name, serverStoreConfiguration), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.createServerStore(name, serverStoreConfiguration), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, CachePersistenceException.class, CACHE_PERSISTENCE_EXCEPTION_CTOR);
     }
   }
 
-  public void validateCache(String name, ServerStoreConfiguration serverStoreConfiguration) throws ClusteredStoreValidationException {
+  public void validateCache(String name, ServerStoreConfiguration serverStoreConfiguration)
+      throws ClusteredStoreValidationException, TimeoutException {
     try {
-      invokeInternal(messageFactory.validateServerStore(name , serverStoreConfiguration), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.validateServerStore(name , serverStoreConfiguration), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, ClusteredStoreValidationException.class, CLUSTERED_STORE_VALIDATION_EXCEPTION_CTOR);
     }
   }
 
-  public void releaseCache(String name) throws CachePersistenceException {
+  public void releaseCache(String name) throws CachePersistenceException, TimeoutException {
     try {
-      invokeInternal(messageFactory.releaseServerStore(name), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.releaseServerStore(name), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, CachePersistenceException.class, CACHE_PERSISTENCE_EXCEPTION_CTOR);
     }
   }
 
-  public void destroyCache(String name) throws CachePersistenceException {
+  public void destroyCache(String name) throws CachePersistenceException, TimeoutException {
     try {
-      invokeInternal(messageFactory.destroyServerStore(name), false);
+      invokeInternal(timeouts.getLifecycleOperationTimeout(), messageFactory.destroyServerStore(name), false);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, CachePersistenceException.class, CACHE_PERSISTENCE_EXCEPTION_CTOR);
     }
@@ -188,7 +223,7 @@ public class EhcacheClientEntity implements Entity {
    * awaits a response.
    *
    * @param message the {@code EhcacheEntityMessage} to send
-   * @param waitUntilReplicated if {@code true}, indicates that the message should be replicated to
+   * @param replicate if {@code true}, indicates that the message should be replicated to
    *                            passive servers before the response for {@code message} is returned
    *
    * @return an {@code EhcacheEntityResponse} holding a successful response from the server for {@code message}
@@ -201,31 +236,45 @@ public class EhcacheClientEntity implements Entity {
    *          operation or if thrown from a message system support method
    * @throws RuntimeException thrown when a message system support method throws a {@code RuntimeException}
    *          or a checked exception
+   * @throws TimeoutException if the server interactions take longer than the timeout configured for the operation
    */
-  public EhcacheEntityResponse invoke(EhcacheEntityMessage message, boolean waitUntilReplicated)
-      throws EhcacheEntityOperationException, IllegalArgumentException, IllegalStateException {
+  public EhcacheEntityResponse invoke(EhcacheEntityMessage message, boolean replicate)
+      throws EhcacheEntityOperationException, IllegalArgumentException, IllegalStateException, TimeoutException {
+    TimeoutDuration timeLimit;
+    if (message.getType() == EhcacheEntityMessage.Type.SERVER_STORE_OP
+        && GET_STORE_OPS.contains(getServerStoreOp(message.getOpCode()))) {
+      timeLimit = timeouts.getGetOperationTimeout();
+    } else {
+      timeLimit = timeouts.getMutativeOperationTimeout();
+    }
     try {
-      return invokeInternal(message, waitUntilReplicated);
+      return invokeInternal(timeLimit, message, replicate);
+    } catch (TimeoutException e) {
+      throw e;
     } catch (Exception e) {
       throw convert(e, EhcacheEntityOperationException.class, EHCACHE_ENTITY_OPERATION_EXCEPTION_CTOR);
     }
   }
 
-  private EhcacheEntityResponse invokeInternal(EhcacheEntityMessage message, boolean waitUntilReplicated)
-      throws CachePersistenceException, MessageCodecException, EntityException {
+  private static final Set<ServerStoreOp> GET_STORE_OPS = EnumSet.of(GET);
+
+  private EhcacheEntityResponse invokeInternal(TimeoutDuration timeLimit, EhcacheEntityMessage message, boolean replicate)
+      throws CachePersistenceException, MessageCodecException, EntityException, TimeoutException {
 
     InvokeFuture<EhcacheEntityResponse> result;
-    if (waitUntilReplicated) {
-      result = endpoint.beginInvoke().message(message).replicate(true).ackCompleted().invoke();
+    if (replicate) {
+      result = endpoint.beginInvoke().message(message).replicate(true).invoke();
     } else {
       result = endpoint.beginInvoke().message(message).invoke();
     }
 
     boolean interrupted = false;
+    long deadlineTimeout = System.nanoTime() + timeLimit.toNanos();
     try {
       while (true) {
         try {
-          EhcacheEntityResponse response = result.get();
+          long timeRemaining = deadlineTimeout - System.nanoTime();
+          EhcacheEntityResponse response = result.getWithTimeout(timeRemaining, TimeUnit.NANOSECONDS);
           if (Type.FAILURE.equals(response.getType())) {
             /*
              * The FAILURE cause is a server-side exception lacking client-side stack trace
@@ -239,6 +288,12 @@ public class EhcacheClientEntity implements Entity {
           }
         } catch (InterruptedException e) {
           interrupted = true;
+        } catch (TimeoutException e) {
+          String msg = "Timeout exceeded for " + getMessageOp(message) + " message; " + timeLimit;
+          TimeoutException timeoutException = new TimeoutException(msg);
+          timeoutException.initCause(e);
+          LOGGER.info(msg, timeoutException);
+          throw timeoutException;
         }
       }
     } finally {
@@ -248,12 +303,32 @@ public class EhcacheClientEntity implements Entity {
     }
   }
 
+  private String getMessageOp(EhcacheEntityMessage message) {
+    switch (message.getType()) {
+      case SERVER_STORE_OP:
+        try {
+          return message.getType() + "/" + getServerStoreOp(message.getOpCode());
+        } catch (IllegalArgumentException e) {
+          return message.getType() + "/" + message.getOpCode();
+        }
+      case LIFECYCLE_OP:
+        try {
+          return message.getType() + "/" + ((LifecycleMessage)message).operation();
+        } catch (ArrayIndexOutOfBoundsException e) {
+          return message.getType() + "/" + message.getOpCode();
+         }
+      default:
+        return message.getType() + "/" + message.getOpCode();
+    }
+  }
+
   /**
    * Prepares an exception of the specified type from an exception thrown by the
-   * {@link #invokeInternal(EhcacheEntityMessage, boolean)} method.
+   * {@link #invokeInternal(TimeoutDuration, EhcacheEntityMessage, boolean)} method.
    *
    * @param e the exception from {@code invoke}
    * @param targetException the desired exception type
+   * @param targetExceptionBuilder a builder for {@code targetException}
    * @param <E> the desired exception type
    *
    * @return an exception of type {@code targetException}
@@ -356,5 +431,112 @@ public class EhcacheClientEntity implements Entity {
 
   private interface Ctor<E extends Exception> {
     E create(String msg, Throwable cause);
+  }
+
+  /**
+   * Describes the timeouts for {@link EhcacheClientEntity} operations.  Use
+   * {@link #builder()} to construct an instance.
+   */
+  public static final class Timeouts {
+    private final TimeoutDuration getOperationTimeout;
+    private final TimeoutDuration mutativeOperationTimeout;
+    private final TimeoutDuration lifecycleOperationTimeout;
+
+    private Timeouts(TimeoutDuration getOperationTimeout, TimeoutDuration mutativeOperationTimeout, TimeoutDuration lifecycleOperationTimeout) {
+      this.getOperationTimeout = getOperationTimeout;
+      this.mutativeOperationTimeout = mutativeOperationTimeout;
+      this.lifecycleOperationTimeout = lifecycleOperationTimeout;
+    }
+
+    public TimeoutDuration getGetOperationTimeout() {
+      return getOperationTimeout;
+    }
+
+    public TimeoutDuration getMutativeOperationTimeout() {
+      return mutativeOperationTimeout;
+    }
+
+    public TimeoutDuration getLifecycleOperationTimeout() {
+      return lifecycleOperationTimeout;
+    }
+
+    public static Builder builder() {
+      return new Builder();
+    }
+
+    @Override
+    public String toString() {
+      return "Timeouts{" +
+          "getOperationTimeout=" + getOperationTimeout +
+          ", mutativeOperationTimeout=" + mutativeOperationTimeout +
+          ", lifecycleOperationTimeout=" + lifecycleOperationTimeout +
+          '}';
+    }
+
+    /**
+     * Constructs instances of {@link Timeouts}.  When obtained from
+     * {@link Timeouts#builder()}, the default values are pre-set.
+     */
+    public static final class Builder {
+      private TimeoutDuration getOperationalTimeout = TimeoutDuration.of(5, TimeUnit.SECONDS);
+      private TimeoutDuration mutativeOperationTimeout = TimeoutDuration.of(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+      private TimeoutDuration lifecycleOperationTimeout = TimeoutDuration.of(10, TimeUnit.SECONDS);
+
+      /**
+       * Sets the timeout for {@code get} operations.  The default value for this timeout is
+       * 5 seconds.
+       *
+       * @param getOperationTimeout the {@code TimeoutDuration} to use for the {@code get} operation timeout
+       *
+       * @return this {@code Builder}
+       */
+      public Builder setGetOperationalTimeout(TimeoutDuration getOperationTimeout) {
+        if (getOperationTimeout == null) {
+          throw new NullPointerException("getOperationTimeout");
+        }
+        this.getOperationalTimeout = getOperationTimeout;
+        return this;
+      }
+
+      /**
+       * Sets the timeout for mutative operations like {@code put} and {@code remove}.  The default value
+       * for this timeout is {@code Long.MAX_VALUE} nanoseconds.
+       *
+       * @param mutativeOperationTimeout the {@code TimeoutDuration} to use for a mutative operation timeout
+       *
+       * @return this {@code Builder}
+       */
+      public Builder setMutativeOperationTimeout(TimeoutDuration mutativeOperationTimeout) {
+        if (mutativeOperationTimeout == null) {
+          throw new NullPointerException("mutativeOperationTimeout");
+        }
+        this.mutativeOperationTimeout = mutativeOperationTimeout;
+        return this;
+      }
+
+      /**
+       * Sets the timeout for server store manager lifecycle operations like {@code validate} and {@code validateCache}.
+       *
+       * @param lifecycleOperationTimeout the {@code TimeoutDuration} to use for a store manager lifecycle operation timeout
+       *
+       * @return this {@code Builder}
+       */
+      public Builder setLifecycleOperationTimeout(TimeoutDuration lifecycleOperationTimeout) {
+        if (lifecycleOperationTimeout == null) {
+          throw new NullPointerException("lifecycleOperationTimeout");
+        }
+        this.lifecycleOperationTimeout = lifecycleOperationTimeout;
+        return this;
+      }
+
+      /**
+       * Gets a new {@link Timeouts} instance using the current timeout duration settings.
+       *
+       * @return a new {@code Timeouts} instance
+       */
+      public Timeouts build() {
+        return new Timeouts(getOperationalTimeout, mutativeOperationTimeout, lifecycleOperationTimeout);
+      }
+    }
   }
 }

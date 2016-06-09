@@ -33,9 +33,9 @@ import static org.junit.Assert.fail;
 
 public class ClusteringServiceConfigurationTest {
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test(expected = NullPointerException.class)
   public void testGetConnectionUrlNull() throws Exception {
-    new ClusteringServiceConfiguration(null);
+    new ClusteringServiceConfiguration((URI)null);
   }
 
   @Test

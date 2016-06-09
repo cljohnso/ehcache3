@@ -19,6 +19,7 @@ package org.ehcache.clustered.client.internal;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 
 import org.ehcache.clustered.lock.client.VoltronReadWriteLock;
 import org.ehcache.clustered.common.ServerSideConfiguration;
@@ -41,8 +42,15 @@ public class EhcacheClientEntityFactory {
   private final Connection connection;
   private final Map<String, Hold> maintenanceHolds = new ConcurrentHashMap<String, Hold>();
 
+  private final EhcacheClientEntity.Timeouts entityTimeouts;
+
   public EhcacheClientEntityFactory(Connection connection) {
+    this(connection, EhcacheClientEntity.Timeouts.builder().build());
+  }
+
+  public EhcacheClientEntityFactory(Connection connection, EhcacheClientEntity.Timeouts entityTimeouts) {
     this.connection = connection;
+    this.entityTimeouts = entityTimeouts;
   }
 
   public boolean acquireLeadership(String entityIdentifier) {
@@ -70,15 +78,17 @@ public class EhcacheClientEntityFactory {
    * Attempts to create and configure the {@code EhcacheActiveEntity} in the Ehcache clustered server.
    *
    * @param identifier the instance identifier for the {@code EhcacheActiveEntity}
-   * @param config the {@code EhcacheActiveEntity} configuration
+   * @param config the {@code EhcacheActiveEntity} configuration to use for creation
    *
    * @throws EntityAlreadyExistsException if the {@code EhcacheActiveEntity} for {@code identifier} already exists
    * @throws EhcacheEntityCreationException if an error preventing {@code EhcacheActiveEntity} creation was raised;
    *        this is generally resulting from another client holding operational leadership preventing this client
    *        from becoming leader and creating the {@code EhcacheActiveEntity} instance
+   * @throws TimeoutException if the creation and configuration of the {@code EhcacheActiveEntity} exceed the
+   *        lifecycle operation timeout
    */
   public void create(final String identifier, final ServerSideConfiguration config)
-      throws EntityAlreadyExistsException, EhcacheEntityCreationException {
+      throws EntityAlreadyExistsException, EhcacheEntityCreationException, TimeoutException {
     Hold existingMaintenance = maintenanceHolds.get(identifier);
     Hold localMaintenance = null;
     if (existingMaintenance == null) {
@@ -120,7 +130,23 @@ public class EhcacheClientEntityFactory {
     }
   }
 
-  public EhcacheClientEntity retrieve(String identifier, ServerSideConfiguration config) throws EntityNotFoundException, IllegalArgumentException, EhcacheEntityBusyException {
+  /**
+   * Attempts to retrieve a reference to an existing {@code EhcacheActiveEntity} in an Ehcache clustered server.
+   *
+   * @param identifier the instance identifier for the {@code EhcacheActiveEntity}
+   * @param config the {@code EhcacheActiveEntity} configuration to use for access checking
+   *
+   * @return an {@code EhcacheClientEntity} providing access to the {@code EhcacheActiveEntity} identified by
+   *      {@code identifier}
+   *
+   * @throws EntityNotFoundException if the {@code EhcacheActiveEntity} identified as {@code identifier} does not exist
+   * @throws IllegalArgumentException if {@code config} does not match the {@code EhcacheActiveEntity} configuration
+   * @throws EhcacheEntityBusyException if another client holds the maintenance lease for {@code identifier}
+   * @throws TimeoutException if the creation and configuration of the {@code EhcacheActiveEntity} exceed the
+   *        lifecycle operation timeout
+   */
+  public EhcacheClientEntity retrieve(String identifier, ServerSideConfiguration config)
+      throws EntityNotFoundException, IllegalArgumentException, EhcacheEntityBusyException, TimeoutException {
     try {
       Hold fetchHold = createAccessLockFor(identifier).tryReadLock();
       if (fetchHold == null) {
@@ -195,11 +221,13 @@ public class EhcacheClientEntityFactory {
     }
   }
 
-  private void validate(EhcacheClientEntity entity, ServerSideConfiguration config) {
+  private void validate(EhcacheClientEntity entity, ServerSideConfiguration config) throws TimeoutException {
+    entity.setTimeouts(entityTimeouts);
     entity.validate(config);
   }
 
-  private void configure(EhcacheClientEntity entity, ServerSideConfiguration config) {
+  private void configure(EhcacheClientEntity entity, ServerSideConfiguration config) throws TimeoutException {
+    entity.setTimeouts(entityTimeouts);
     entity.configure(config);
   }
 }

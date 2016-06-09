@@ -41,7 +41,7 @@ public abstract class ServerStoreTest {
   private final ChainBuilder chainBuilder = newChainBuilder();
   private final ElementBuilder elementBuilder = newElementBuilder();
 
-  private static void populateStore(ServerStore store) {
+  private static void populateStore(ServerStore store) throws Exception {
     for(int i = 1 ; i <= 16; i++) {
       store.append(i, createPayload(i));
     }
@@ -73,7 +73,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testGetNoMappingExists() {
+  public void testGetNoMappingExists() throws Exception {
     ServerStore store = newStore();
     Chain chain = store.get(1);
     assertThat(chain.isEmpty(), is(true));
@@ -81,7 +81,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testGetMappingExists() {
+  public void testGetMappingExists() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
     Chain chain = store.get(1);
@@ -90,7 +90,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testAppendNoMappingExists() {
+  public void testAppendNoMappingExists() throws Exception {
     ServerStore store = newStore();
     store.append(1, createPayload(1));
     Chain chain = store.get(1);
@@ -99,7 +99,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testAppendMappingExists() {
+  public void testAppendMappingExists() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
     store.append(2, createPayload(22));
@@ -109,7 +109,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testGetAndAppendNoMappingExists() {
+  public void testGetAndAppendNoMappingExists() throws Exception {
     ServerStore store = newStore();
     Chain chain = store.getAndAppend(1, createPayload(1));
     assertThat(chain.isEmpty(), is(true));
@@ -118,7 +118,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testGetAndAppendMappingExists() {
+  public void testGetAndAppendMappingExists() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
     Chain chain = store.getAndAppend(1, createPayload(22));
@@ -130,7 +130,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testReplaceAtHeadSucceedsMappingExistsHeadMatchesStrictly() {
+  public void testReplaceAtHeadSucceedsMappingExistsHeadMatchesStrictly() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
     Chain existingMapping = store.get(1);
@@ -152,7 +152,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testReplaceAtHeadSucceedsMappingExistsHeadMatches() {
+  public void testReplaceAtHeadSucceedsMappingExistsHeadMatches() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
 
@@ -177,7 +177,7 @@ public abstract class ServerStoreTest {
   }
 
   @Test
-  public void testReplaceAtHeadIgnoredMappingExistsHeadMisMatch() {
+  public void testReplaceAtHeadIgnoredMappingExistsHeadMisMatch() throws Exception {
     ServerStore store = newStore();
     populateStore(store);
 
