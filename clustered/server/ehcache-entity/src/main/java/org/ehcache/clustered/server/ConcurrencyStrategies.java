@@ -68,6 +68,8 @@ public final class ConcurrencyStrategies {
     public int concurrencyKey(EhcacheEntityMessage entityMessage) {
       if (entityMessage instanceof ServerStoreOpMessage.GetMessage) {
         return UNIVERSAL_KEY;
+      } else if (entityMessage instanceof ServerStoreOpMessage.ClearMessage) {
+        return MANAGEMENT_KEY;
       } else if (entityMessage instanceof ConcurrentEntityMessage) {
         ConcurrentEntityMessage concurrentEntityMessage = (ConcurrentEntityMessage) entityMessage;
         return DATA_CONCURRENCY_KEY_OFFSET + mapper.getSegmentForKey(concurrentEntityMessage.concurrencyKey());
